@@ -1,6 +1,7 @@
 
 from resonator_tools import circuit
 
+#THIS IS A GITHUB TEST
 
 port1 = circuit.notch_port()
 port1.add_froms2p('S21testdata.s2p',3,4,'realimag',fdata_unit=1e9,delimiter=None)
