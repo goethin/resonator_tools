@@ -1,6 +1,7 @@
 import warnings
 import numpy as np
 import scipy.optimize as spopt
+
 from scipy.constants import hbar
 from scipy.interpolate import splrep, splev
 
@@ -550,7 +551,182 @@ class notch_port(circlefit, save_load, plotting, calibration):
 			return 4.*k_c/(2.*np.pi*hbar*fr*(k_c+k_i)**2) * power
 		else:
 			warnings.warn('Please perform the fit first',UserWarning)
-			return None	  
+			return None
+			
+	def convert_fitresults_to_lambda_half_hanger(self,fitresults):
+		"""
+		PREVIOUS CODE:
+		The code of [0], fits a circle in the (S21_real,S21_imag) space to the resonance of a quareter-wavelength notch-type resonator.
+		He distinguishes between the approximative PhiRM method and the diameter corrected method. [1] introduces the PhiRM method and [2] differentiates from the correct method.
+		The program fits the circle with the algebraic technique described in [3]
+
+		[0] (Main paper) Probst, et al."Efficient and robust analysis of complex scattering data under noise in microwave resonators" Review of Scientific Instruments, 86(2), p.024706 (2015).
+		[1] (not diameter corrected) Jiansong Gao, "The Physics of Superconducting Microwave Resonators" (PhD Thesis), Appendix E, California Institute of Technology, (2008)
+		[2] (diameter corrected) M. S. Khalil, et. al., J. Appl. Phys. 111, 054510 (2012)
+		[3] (fitting techniques) N. CHERNOV AND C. LESORT, "Least Squares Fitting of Circles", Journal of Mathematical Imaging and Vision 23, 239, (2005)
+		[4] (further fitting techniques) P. J. Petersan, S. M. Anlage, J. Appl. Phys, 84, 3392 (1998)
+		"""
+		"""
+		NEW (implemented by Jann Ungerer, March 17, 2020):
+		If the notch-type resonator (hanger) is a half-wavelength resonator, the definition of Qc changes by a factor of 2
+		(See e.g. activity report of Jann from November 2019.)
+		When using the correct fitting method (diameter corrected, described by [2]),
+		as a result also the total Ql and Qi have to be adapted.
+
+		We are using the fit function implemented in [0] of a lambda_quarter hanger for fitting a lambda_half hanger.
+		Therefore, the used fit paramerters, Ql and Qc (for lambda-quarter) have to be translated into the parameters, describing the lambda-half hangers.
+		The complex S21 parameters are:
+		lambda_quarter:
+		S21=(1.-Ql/Qc*np.exp(1j*phi)/(1.+2j*Ql*(f-fr)/fr))	
+		lambda_half
+		S21=(1-(np.exp(1j*phi)*(1/(2/Qe+1/Qi))*2/Qe)/(1+2j*(1/(2/Qe+1/Qi))*(f-fr)/fr)))
+
+		By comparing the two formulas, we find the two equations.
+		Ql/Qc=(1/(2/Qe+1/Qi))*2/Qe and
+		Ql=1/(2/Qe+1/Qi).
+		Solving those equations yields the relations
+		Qe=2Qc
+		Qi=1/(1/Ql-1/Qc)
+		Hence, there is a bijective map (Ql,Qc)_lquarter <-> (Qi,Qe)_lhalf which can be used for interpretating the fit results for a half-wavelength resonator.
+		"""
+		import uncertainties as uc
+		nom=uc.nominal_value
+		std=uc.std_dev
+		r=fitresults
+		r_lhalf=fitresults
+
+
+		#Parameters from diameter corrected method as described in [2]
+		Qi_lquarter=uc.ufloat(r['Qi_dia_corr'],r['Qi_dia_corr_err'])  
+		Ql_lquarter=uc.ufloat(r['Ql'],r['Ql_err'])
+		Qc_lquarter=1/(1/Ql_lquarter-1/Qi_lquarter)
+
+		#Convert to half-wavelength fit
+		Qc_lhalf=2*Qc_lquarter#This is
+		Qi_lhalf=Qi_lquarter
+		Ql_lhalf=1/(1/Qi_lhalf+1/Qc_lhalf)
+
+		r_lhalf['Qc_dia_corr']=nom(Qc_lhalf)
+		r_lhalf['Qc_dia_corr_err']=std(Qc_lhalf)
+		r_lhalf['Qi_dia_corr']=nom(Qi_lhalf)
+		r_lhalf['Qi_dia_corr_err']=std(Qi_lhalf)
+		r_lhalf['Ql']=nom(Ql_lhalf)
+		r_lhalf['Ql_err']=std(Ql_lhalf)
+
+		#Paramters from inacurate PhiRM methdo as used e.g. in [1].
+		Qi_lquarter=uc.ufloat(r['Qi_no_corr'],r['Qi_no_corr_err'])  
+		Qc_lquarter=uc.ufloat(r['absQc'],r['absQc_err'])
+		Ql_lquarter=1/(1/Qi_lquarter+1/Qc_lquarter)
+
+		#Convert to half-wavelength fit
+		Qc_lhalf=2*Qc_lquarter
+		Qi_lhalf=Qi_lquarter#=1/(1/r['Ql']-1/r['Qc_dia_corr'])
+		Ql_lhalf=1/(1/Qi_lhalf+1/Qc_lhalf)
+
+		r_lhalf['Qc_no_corr']=nom(Qc_lhalf)
+		r_lhalf['Qc_no_corr_err']=std(Qc_lhalf)
+		r_lhalf['Qi_no_corr']=nom(Qi_lhalf)
+		r_lhalf['Qi_no_corr_err']=std(Qi_lhalf)
+		r_lhalf['Ql_no_corr']=nom(Ql_lhalf)
+		r_lhalf['Ql_no_corr_err']=std(Ql_lhalf)
+		return r_lhalf
+
+class transmission_port(circlefit,save_load,plotting):
+	'''
+	a class for handling transmission measurements
+	'''
+	
+	def __init__(self,f_data=None,z_data_raw=None):
+		self.porttype = 'transm'
+		self.fitresults = {}
+		if f_data is not None:
+			self.f_data = np.array(f_data)
+		else:
+			self.f_data=None
+		if z_data_raw is not None:
+			self.z_data_raw = np.array(z_data_raw)
+		else:
+			self.z_data=None
+		
+	def _S21(self,f,fr,Ql,A):
+		return A**2/(1.+4.*Ql**2*((f-fr)/fr)**2) 
+		
+	def fit(self):
+		self.ampsqr = (np.absolute(self.z_data_raw))**2
+		p = [self.f_data[np.argmax(self.ampsqr)],1000.,np.amax(self.ampsqr)]
+		popt, pcov = spopt.curve_fit(self._S21, self.f_data, self.ampsqr,p)
+		errors = np.sqrt(np.diag(pcov))
+		self.fitresults = {'fr':popt[0],'fr_err':errors[0],'Ql':popt[1],'Ql_err':errors[1],'Ampsqr':popt[2],'Ampsqr_err':errors[2]} 
+	
+class resonator(object):
+	'''
+	Universal resonator analysis class
+	It can handle different kinds of ports and assymetric resonators.
+	'''
+	def __init__(self, ports = {}, comment = None):
+		'''
+		initializes the resonator class object
+		ports (dictionary {key:value}): specify the name and properties of the coupling ports
+			e.g. ports = {'1':'direct', '2':'notch'}
+		comment: add a comment
+		'''
+		self.comment = comment
+		self.port = {}
+		self.transm = {}
+		if len(ports) > 0:
+			for key, pname in iter(ports.items()):
+				if pname=='direct':
+					self.port.update({key:reflection_port()})
+				elif pname=='notch':
+					self.port.update({key:notch_port()})
+				else:
+					warnings.warn("Undefined input type! Use 'direct' or 'notch'.", SyntaxWarning)
+		if len(self.port) == 0: warnings.warn("Resonator has no coupling ports!", UserWarning)
+			
+	def add_port(self,key,pname):
+		if pname=='direct':
+			self.port.update({key:reflection_port()})
+		elif pname=='notch':
+			self.port.update({key:notch_port()})
+		else:
+			warnings.warn("Undefined input type! Use 'direct' or 'notch'.", SyntaxWarning)
+		if len(self.port) == 0: warnings.warn("Resonator has no coupling ports!", UserWarning)
+			
+	def delete_port(self,key):
+		del self.port[key]
+		if len(self.port) == 0: warnings.warn("Resonator has no coupling ports!", UserWarning)
+		
+	def get_Qi(self):
+		'''
+		based on the number of ports and the corresponding measurements
+		it calculates the internal losses
+		'''
+		pass
+	
+	def get_single_photon_limit(self,port):
+		'''
+		returns the amout of power necessary to maintain one photon 
+		on average in the cavity
+		'''
+		pass
+	
+	def get_photons_in_resonator(self,power,port):
+		'''
+		returns the average number of photons
+		for a given power
+		'''
+		pass
+		
+	def add_transm_meas(self,port1, port2):
+		'''
+		input: port1
+		output: port2
+		adds a transmission measurement 
+		connecting two direct ports S21
+		'''
+		key = port1 + " -> " + port2
+		self.port.update({key:transm()})
+		pass
 
 class transmission_port(circlefit,save_load,plotting):
 	'''
